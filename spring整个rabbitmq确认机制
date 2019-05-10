@@ -1,4 +1,9 @@
-一.rabbit ACK确认
+
+
+
+
+
+二.rabbit ACK确认
 
 1.1:默认情况下如果一个Message被消费者所正确接收会被从Queue中移除
 
@@ -149,6 +154,207 @@ message要持久化
 
 
 参考链接：https://www.jianshu.com/p/2c5eebfd0e95  https://www.jianshu.com/p/19e0927315da
+
+
+
+************************************************************代码实例*************************************************
+1.配置rabbitmq参数
+#主机地址
+spring.rabbitmq.host=192.168.1.204
+#端口
+spring.rabbitmq.prot=5672
+#用户名
+spring.rabbitmq.username=test
+#密码
+spring.rabbitmq.password=test1234
+# 开启发送确认
+spring.rabbitmq.publisher-confirms=true
+# 开启发送失败退回
+spring.rabbitmq.publisher-returns=true
+# 开启手动ACK
+spring.rabbitmq.listener.simple.acknowledge-mode=manual
+
+
+
+
+2.rabbitmq相关config
+
+import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+/**
+ * Broker:它提供一种传输机制，它的角色就是维护一条从生产者到消费者的线路，保证数据能按照指定的方式进行传输
+ * Exchange: 消息交换机，它指定消息按照什么规则，路由到那个队列
+ * Queue:消息的载体，每个消息都会被投到一个或多个队列
+ * Binding: 绑定，它的作用就是把exchange和queue按照路由规则绑定起来
+ * Routing key: 路由关键字，exchange根据这个关键字进行消息投递
+ * vhost:虚拟主机，一个broker里可以有多个vhost,用作不同用户的权限分离
+ * Producer: 消息的生产者，就是投递消息的程序
+ * Consumer:消息消费者，就是接收消息的程序
+ * Channel: 消息通道，在客户端的每个连接里，可以建立多个channel
+ */
+
+@Configuration
+public class RabbitmqConfig {
+
+    @Value("${spring.rabbitmq.host:}")
+    private String host;
+
+    @Value("${spring.rabbitmq.port:}")
+    private String port;
+
+    @Value("${spring.rabbitmq.username:}")
+    private String username;
+
+    @Value("${spring.rabbitmq.password:}")
+    private String password;
+
+    private static String vhost = "/pay/lm";
+
+    private static String EXCHANGENAME = "heiheiExchange";
+
+   //队列
+    @Bean
+    public Queue queue(){
+        return new Queue("testheihei");
+    }
+    //交换机
+    @Bean
+    public DirectExchange directExchange(){
+        return new DirectExchange(EXCHANGENAME);
+    }
+    //绑定队列和交换机
+    @Bean
+    public Binding bindingQueueToExchange(Queue queue,DirectExchange directExchange){
+        return BindingBuilder.bind(queue).to(directExchange).with("heihei");
+    }
+
+    //连接工厂
+    @Bean
+    public ConnectionFactory connectionFactory(){
+        CachingConnectionFactory factory = new CachingConnectionFactory();
+        factory.setAddresses(host+":"+port);
+        factory.setVirtualHost(vhost);
+        factory.setUsername(username);
+        factory.setPassword(password);
+	//confirm 回调
+        factory.setPublisherConfirms(true); 
+	//return  回调
+        factory.setPublisherReturns(true);
+        return factory;
+    }
+
+    //操作模板
+    @Bean
+    public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory){
+        return new RabbitTemplate(connectionFactory);
+    }
+
+}
+
+
+
+
+
+3.消息生产者
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+import javax.annotation.PostConstruct;
+import java.util.Date;
+
+@Component
+public class MsgProducer implements  RabbitTemplate.ConfirmCallback,RabbitTemplate.ReturnCallback{
+
+    private final Logger logger = LoggerFactory.getLogger(this.getClass());
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
+
+    @PostConstruct
+    public void init(){
+        rabbitTemplate.setConfirmCallback(this);
+        rabbitTemplate.setReturnCallback(this);
+    }
+
+    public void send(){
+        String message = "hello"+new Date();
+        System.out.println("发送的消息："+message);
+        this.rabbitTemplate.convertAndSend("heiheiExchange","heihei",message);
+    }
+
+    /**
+     * 实现ConfirmCallback
+     * ACK = true 仅仅表示消息已被Broker接收到，并不表示已成功投放到消息队列中
+     * ACK = false 表示消息由于Broker接收到，消息并未处理成功
+     *
+     * @param correlationData
+     * @param ack
+     * @param cause
+     */
+    @Override
+    public void confirm(CorrelationData correlationData, boolean ack, String cause) {
+        if(ack){
+            System.out.println("消息发送到交换机成功");
+        }else{
+            System.out.println("消息发送到交换机失败，原因："+cause);
+        }
+    }
+
+    /**
+     *  实现ReturnCallback
+     *  消息没有正确到达队列时触发回调，如果正确到达队列不执行
+     *
+     * @param message
+     * @param replyCode
+     * @param replyText
+     * @param exchange
+     * @param routingKey
+     */
+    @Override
+    public void returnedMessage(Message message, int replyCode, String replyText, String exchange, String routingKey) {
+          System.out.println("return message 回调过来了......");
+    }
+}
+
+
+
+4.消息消费者
+import com.rabbitmq.client.Channel;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.annotation.RabbitHandler;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.stereotype.Component;
+
+@Component
+@RabbitListener(queues = "testheihei")
+public class MsgReceiver{
+
+    @RabbitHandler
+    public void process(String msg, Channel channel, Message message) throws Exception{
+        System.out.println("接收到的消息："+msg);
+        channel.basicAck(message.getMessageProperties().getDeliveryTag(),false);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
