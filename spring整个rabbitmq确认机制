@@ -1,9 +1,244 @@
+  一.通常得队列服务：发消息者，队列，消息接收者，rabbitmq在这些概念上多做了一层抽象，在发消息者和队列之间加入了
+
+    交换器。这样发送消息者和队列就没有直接联系，转而变成发消息者把消息给交换机，交换机根据调度策略把消息再给队列。
+
+    4个重要得概念：虚拟主机，交换机，队列和绑定
+
+    1.1：虚拟主机：一个虚拟主机持有一组交换机，队列和绑定。为什么需要多个虚拟主机呢？RabbitMq中，用户只能在虚拟主机的
+
+    粒度进行权限控制。因此，如果需要禁止A组访问B组的交换机，队列和绑定，必须为A和B分别创建一个虚拟主机。每个RabbitMQ服务器
+
+    都有一个默认的虚拟主机‘/’。
+
+    1.2：交换机：Exchange用于转发消息，但是它不会做存储，如果没有Queue bind到Exchange的话，它会直接丢掉Producer发过来的消息。
+
+ 	这里有一个比较重要的概念：路由键。消息到交换机的时候，交换机会转发到对应的队列中，那么究竟转发到哪个队列，就要根据该路由键。
+
+    1.3：绑定：也就是交换机需要和队列想绑定，是多对多的关系
+
+
+
+  二.交换机（Exchange）
+
+  交换机的功能主要是接收消息并且转发到绑定的队列，交换机不存储消息，在启用ACK模式后，交换机找不到队列会返回错误。交换机有四种类型
+
+  Direct,topic,Headers,Fanout
+
+  2.1: Direct: 
+
+ 	 处理路由键，需要特定路由键RoutKey,全文匹配才能转发到队列上
+
+ 	 **如果两个接收程序都是用了同一个queue和相同的routingKey去绑定direct exchange的话，分发行为是负载均衡的，也就是第一个是程序1收到，第二个是
+
+ 	 程序2收到，以此类推
+
+ 	 **如果有两个接收程序用了各自的queue,但使用相同的routingKey去绑定direct exchange的话，分发的行为是复制的，也就是说每个程序都会收到这个消息的
+
+ 	 副本。行为相当于fanout类型的exchange
+
+  2.2：Topic: 按规则转发（最灵活）
+
+       将路由键值RoutKey和某种模式Pattern匹配，符号”#“匹配一个或多个词，符号”*“只匹配一个词。
+
+  2.3；Headers:
+
+  2.4；Fanout: 
+
+   不处理路由键Routkey.只需要队列Queue绑定到交换机Exchange上。一个发送到交换机的消息都会被转发到与该交换机绑定的所有队列上，类似
+
+   子网广播，每台子网内主机都能获得一份复制的消息。
+
+
+ 三.简单使用
+
+   1.引入依赖
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-amqp</artifactId>
+  </dependency>
+
+   2.rabbitmq 配置
+    spring.rabbitmq.host=192.168.0.86
+	spring.rabbitmq.port=5672
+	spring.rabbitmq.username=admin
+	spring.rabbitmq.password=123456
+
+
+
+   3.队列配置
+    @Configuration
+	public class RabbitConfig {
+
+ 		@Bean
+		public Queue Queue() {
+			return new Queue("hello");
+		}
+
+ 	}
+
+
+
+   4.发送者
+    @component
+	public class HelloSender {
+
+ 		@Autowired
+		private AmqpTemplate rabbitTemplate;
+
+ 		public void send() {
+			String context = "hello " + new Date();
+			System.out.println("Sender : " + context);
+			this.rabbitTemplate.convertAndSend("hello", context);
+		}
+
+ 	}
+
+
+
+     5.接收者
+	@Component
+	@RabbitListener(queues = "hello")
+	public class HelloReceiver {
+
+ 		@RabbitHandler
+		public void process(String hello) {
+			System.out.println("Receiver  : " + hello);
+		}
+
+ 	}
+
+
+ 	6.测试
+	@RunWith(SpringRunner.class)
+	@SpringBootTest
+	public class RabbitMqHelloTest {
+
+ 		@Autowired
+		private HelloSender helloSender;
+
+ 		@Test
+		public void hello() throws Exception {
+			helloSender.send();
+		}
+
+ 	}
+
+
+
+
+ 四. Topic Exchange  首先对topic规则配置，这里使用两个队列来测试
+	@Configuration
+	public class TopicRabbitConfig {
+
+ 		final static String message = "topic.message";
+		final static String messages = "topic.messages";
+
+ 		//定义队列
+		@Bean
+		public Queue queueMessage() {
+			return new Queue(TopicRabbitConfig.message);
+		}
+
+ 	    //定义队列
+		@Bean
+		public Queue queueMessages() {
+			return new Queue(TopicRabbitConfig.messages);
+		}
+
+ 		//定义交换机
+		@Bean
+		TopicExchange exchange() {
+			return new TopicExchange("exchange");
+		}
+
+ 		//将队列绑定到交换机
+		@Bean
+		Binding bindingExchangeMessage(Queue queueMessage, TopicExchange exchange) {
+			return BindingBuilder.bind(queueMessage).to(exchange).with("topic.message");
+		}
+
+ 		//将交换机绑定到交换机
+		@Bean
+		Binding bindingExchangeMessages(Queue queueMessages, TopicExchange exchange) {
+			return BindingBuilder.bind(queueMessages).to(exchange).with("topic.#");
+		}
+	}
+
+ 	测试队列
+	public void send1() {
+		String context = "hi, i am message 1";
+		System.out.println("Sender : " + context);
+		this.rabbitTemplate.convertAndSend("exchange", "topic.message", context);
+	}
+
+ 	public void send2() {
+		String context = "hi, i am messages 2";
+		System.out.println("Sender : " + context);
+		this.rabbitTemplate.convertAndSend("exchange", "topic.messages", context);
+	}
+
+     发送send1会匹配到topic.#和topic.message两个Receiver都可以收到消息。发送send2只有topic.#可以收到消息
 
 
 
 
 
-二.rabbit ACK确认
+ 五.Fanout Exchange 广播模式，给Fanout交换机发送消息，绑定了这个交换机的所有队列都能收到这个消息
+   这里使用了 A、B、C 三个队列绑定到 Fanout 交换机上面，发送端的 routing_key 写任何字符都会被忽略：
+
+     @Configuration
+	public class FanoutRabbitConfig {
+
+ 		@Bean
+		public Queue AMessage() {
+			return new Queue("fanout.A");
+		}
+
+ 		@Bean
+		public Queue BMessage() {
+			return new Queue("fanout.B");
+		}
+
+ 		@Bean
+		public Queue CMessage() {
+			return new Queue("fanout.C");
+		}
+
+ 		@Bean
+		FanoutExchange fanoutExchange() {
+			return new FanoutExchange("fanoutExchange");
+		}
+
+ 		@Bean
+		Binding bindingExchangeA(Queue AMessage,FanoutExchange fanoutExchange) {
+			return BindingBuilder.bind(AMessage).to(fanoutExchange);
+		}
+
+ 		@Bean
+		Binding bindingExchangeB(Queue BMessage, FanoutExchange fanoutExchange) {
+			return BindingBuilder.bind(BMessage).to(fanoutExchange);
+		}
+
+ 		@Bean
+		Binding bindingExchangeC(Queue CMessage, FanoutExchange fanoutExchange) {
+			return BindingBuilder.bind(CMessage).to(fanoutExchange);
+		}
+
+ 	}
+
+
+     发送端：
+	public void send() {
+		String context = "hi, fanout msg ";
+		System.out.println("Sender : " + context);
+		this.rabbitTemplate.convertAndSend("fanoutExchange","", context);
+    }
+
+
+
+**********************************************ACK*************************************************
+
+六.rabbit ACK确认
 
 1.1:默认情况下如果一个Message被消费者所正确接收会被从Queue中移除
 
@@ -137,17 +372,13 @@
 
 	
 	
-消息可靠总结
-
-持久化
-
+消息可靠总结--->
+持久化:
 exchange要持久化
 queue要持久化
 message要持久化
 
-
-消息确认
-
+消息确认------>
 启动消费返回（@ReturnList注解，生产者就可以知道哪些消息没有发出去）
 生产者和Server（broker）之间的消息确认
 消费者和Server（broker）之间的消息确认
@@ -157,7 +388,7 @@ message要持久化
 
 
 
-************************************************************代码实例*************************************************
+************************************************************消息确认ACK代码实例*************************************************
 1.配置rabbitmq参数
 #主机地址
 spring.rabbitmq.host=192.168.1.204
